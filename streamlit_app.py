@@ -44,18 +44,25 @@ def fetch_products(cid):
     data = resp.json()
     return [item['code'] for item in data.get('products', []) if isinstance(item, dict) and 'code' in item]
 
-# Hent produktliste
-product_codes = fetch_products(CID)
+# Hent produktliste\ nproduct_codes = fetch_products(CID)
+# Søg produkter (delmatch)
+search_query = st.sidebar.text_input("Søg produkter (delmatch)")
+if search_query:
+    filtered_products = [p for p in product_codes if search_query.lower() in p.lower()]
+    if not filtered_products:
+        st.sidebar.warning("Ingen produkter matcher din søgning.")
+else:
+    filtered_products = product_codes
 
-# Checkbox for “vælg alle”
+# Checkbox for “vælg alle” (på de filtrerede)
 select_all = st.sidebar.checkbox("Vælg alle produkter", value=False)
 if select_all:
-    selected_products = product_codes
+    selected_products = filtered_products
 else:
     selected_products = st.sidebar.multiselect(
         "Vælg én eller flere produkter",
-        product_codes,
-        default=product_codes[:1]
+        filtered_products,
+        default=filtered_products[:1]
     )
 
 # Frame-udvælgelse (1–36)
