@@ -47,7 +47,7 @@ for code in product_codes:
 
 # 3) Vælg prefix
 prefixes = sorted(prefix_map.keys())
-selected_prefix = st.sidebar.selectbox("Søg frem på cylindo-product code grupper (bagefter kan du vælge "alle")", ["Alle"] + prefixes)
+selected_prefix = st.sidebar.selectbox("Søg frem på cylindo-product code grupper. Bagefter kan du vælge 'alle' nedenfor.", ["Alle"] + prefixes)
 if selected_prefix == "Alle":
     codes_for_selection = product_codes
 else:
@@ -73,7 +73,7 @@ else:
 
 # 6) Vælg frames
 frame_options = list(range(1, 37))
-selected_frames = st.sidebar.multiselect("Vælg frames af produktet (vinkel)", frame_options, default=[1])
+selected_frames = st.sidebar.multiselect("Vælg frames af produktet - vinkel", frame_options, default=[1])
 
 # 7) Filnavn
 csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
