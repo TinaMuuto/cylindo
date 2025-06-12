@@ -1,10 +1,4 @@
-# === Streamlit Cylindo CSV Generator med prefix-gruppering og enabled-filter ===
-# Opsætning:
-# 1) .env: CYLINDO_CID=4928
-# 2) .env i .gitignore
-# 3) requirements.txt: streamlit, requests, python-dotenv, pandas
-# 4) pip install -r requirements.txt
-# 5) python3 -m streamlit run streamlit_app.py
+# === Streamlit Cylindo CSV Generator med prefix-gruppering ===
 
 import os
 import time
@@ -15,15 +9,31 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
-# Load miljøvariabler
+# --- Load miljøvariabler ---
 load_dotenv()
 CID = os.getenv("CYLINDO_CID", "4928")
 
-# Streamlit sideopsætning
+# --- Sideopsætning ---
 st.set_page_config(page_title="Cylindo CSV Generator", layout="wide")
-st.title("Generate cylindo renderings for Muuto in CSV format including URL to the images")
+st.title("Cylindo CSV Generator")
 
-# Sidebar
+# --- Brugsvejledning ---
+with st.expander("📖 Sådan bruger du appen"):
+    st.markdown("""
+    1. **Gruppering (prefix-filter):**  
+       Vælg en kode-gruppe (de to første tokens i product-code) eller “Alle” for at starte med hele listen.  
+    2. **Søgning:**  
+       Skriv en tekst for kun at vise produkter fra din gruppe, der indeholder denne tekst.  
+    3. **Vælg alle / Multiselect:**  
+       - Sæt flueben i **“Vælg alle”**, hvis du vil markere alle viste produkter.  
+       - Ellers vælg manuelt de ønskede produkter i multiselect-feltet.  
+    4. **Frames:**  
+       Marker én eller flere frame-numre (1–36) for at vælge billedvinkler.  
+    5. **Generér CSV:**  
+       Klik **“Generér CSV”** i sidebar. Du får et downloadlink til en CSV med alle kombinationer.
+    """)
+    
+# --- Sidebar inputs ---
 st.sidebar.header("Configuration")
 
 @st.cache_data
@@ -47,7 +57,7 @@ for code in product_codes:
 
 # 3) Vælg prefix
 prefixes = sorted(prefix_map.keys())
-selected_prefix = st.sidebar.selectbox("Søg frem på cylindo-product code grupper. Bagefter kan du vælge 'alle' nedenfor.", ["Alle"] + prefixes)
+selected_prefix = st.sidebar.selectbox("Grupper efter kode-prefix", ["Alle"] + prefixes)
 if selected_prefix == "Alle":
     codes_for_selection = product_codes
 else:
@@ -73,7 +83,7 @@ else:
 
 # 6) Vælg frames
 frame_options = list(range(1, 37))
-selected_frames = st.sidebar.multiselect("Vælg frames af produktet - vinkel", frame_options, default=[1])
+selected_frames = st.sidebar.multiselect("Vælg frames", frame_options, default=[1])
 
 # 7) Filnavn
 csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
@@ -81,20 +91,18 @@ csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
 # 8) Generér-knap
 generate = st.sidebar.button("Generér CSV")
 
-# Main: lav kombinationer og CSV kun for enabled produkter
+# --- Main: lav kombinationer og CSV kun for enabled produkter ---
 if generate:
     with st.spinner("Genererer…"):
         rows = []
         base_qs = "encoding=png&size=1500&removeEnvironmentShadow=true"
         for product in selected_products:
-            # Hent konfiguration
             cfg_url = f"https://content.cylindo.com/api/v2/{CID}/products/{product}/configuration"
             resp = requests.get(cfg_url, timeout=20)
             if resp.status_code != 200:
                 st.error(f"HTTP {resp.status_code} for {product}")
                 continue
             cfg = resp.json()
-            # Tjek enabled-flag
             if not cfg.get("enabled", False):
                 # spring deaktiverede produkter
                 continue
@@ -117,16 +125,16 @@ if generate:
                         f"/products/{product}/frames/{frame}?{base_qs}&" + "&".join(parts)
                     )
                     rows.append({
-                        "Product": product,
-                        "Frame": frame,
-                        "Feature": keys[0],
-                        "Option": combo[0],
+                        "Product":  product,
+                        "Frame":    frame,
+                        "Feature":  keys[0],
+                        "Option":   combo[0],
                         "ImageURL": img_url
                     })
                 time.sleep(0.05)
 
         if not rows:
-            st.warning("Ingen data genereret – tjek dine valg (eller at produkter er enabled).")
+            st.warning("Ingen data genereret – tjek dine valg.")
         else:
             df = pd.DataFrame(rows)
             st.success(f"Genereret {len(df)} rækker")
