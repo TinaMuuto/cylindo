@@ -1,0 +1,6 @@
+# Python-konfiguration og caches
+__pycache__/
+*.pyc
+
+# Miljøvariabler
+.env
