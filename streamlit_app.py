@@ -1,5 +1,3 @@
-# === Streamlit Cylindo CSV Generator med prefix-gruppering ===
-
 import os
 import time
 import requests
@@ -9,142 +7,130 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
-# --- Load miljøvariabler ---
+# Load miljøvariabler
 load_dotenv()
 CID = os.getenv("CYLINDO_CID", "4928")
 
-# --- Sideopsætning ---
+# Sideopsætning
 st.set_page_config(page_title="Cylindo CSV Generator", layout="wide")
 st.title("Cylindo CSV Generator")
 
-# --- Brugsvejledning ---
+# Brugsvejledning
 with st.expander("📖 Sådan bruger du appen"):
     st.markdown("""
-    1. **Gruppering (prefix-filter):**  
-       Vælg en kode-gruppe (de to første tokens i product-code) eller “Alle” for at starte med hele listen.  
-    2. **Søgning:**  
-       Skriv en tekst for kun at vise produkter fra din gruppe, der indeholder denne tekst.  
-    3. **Vælg alle / Multiselect:**  
-       - Sæt flueben i **“Vælg alle”**, hvis du vil markere alle viste produkter.  
-       - Ellers vælg manuelt de ønskede produkter i multiselect-feltet.  
-    4. **Frames:**  
-       Marker én eller flere frame-numre (1–36) for at vælge billedvinkler.  
-    5. **Generér CSV:**  
-       Klik **“Generér CSV”** i sidebar. Du får et downloadlink til en CSV med alle kombinationer.
+    1. Vælg prefix-gruppe eller “Alle”.  
+    2. Søg eventuelt i koderne.  
+    3. Kryds “Vælg alle” eller multiselect enkelte produkter.  
+    4. Vælg én eller flere frame-numre.  
+    5. Angiv `Background color` som hex (fx `F9F8F2`) og `Size` (px).  
+    6. Klik **Generér CSV** – output indeholder kolonnerne `background`, `size` og for hver feature både `<FEATURE>_code` & `<FEATURE>_name`.  
     """)
-    
-# --- Sidebar inputs ---
+
+# Sidebar
 st.sidebar.header("Configuration")
 
 @st.cache_data
 def fetch_product_codes(cid):
-    """Henter alle produkt-koder for kunden."""
-    url = f"https://content.cylindo.com/api/v2/{cid}/listcustomerproducts"
-    r = requests.get(url, timeout=20)
+    r = requests.get(f"https://content.cylindo.com/api/v2/{cid}/listcustomerproducts", timeout=20)
     r.raise_for_status()
-    data = r.json()
-    return [item["code"] for item in data.get("products", []) if isinstance(item, dict) and "code" in item]
+    return [p["code"] for p in r.json().get("products", []) if "code" in p]
 
-# 1) Hent alle koder
+# 1) Hent koder & gruppering
 product_codes = fetch_product_codes(CID)
-
-# 2) Byg prefix-grupper
 prefix_map = {}
 for code in product_codes:
     parts = code.split("_")
-    prefix = "_".join(parts[:2]) if len(parts) >= 2 else code
+    prefix = "_".join(parts[:2]) if len(parts)>=2 else code
     prefix_map.setdefault(prefix, []).append(code)
+prefixes = ["Alle"] + sorted(prefix_map.keys())
+selected_prefix = st.sidebar.selectbox("Grupper efter prefix", prefixes)
+codes = product_codes if selected_prefix=="Alle" else prefix_map[selected_prefix]
 
-# 3) Vælg prefix
-prefixes = sorted(prefix_map.keys())
-selected_prefix = st.sidebar.selectbox("Grupper efter kode-prefix", ["Alle"] + prefixes)
-if selected_prefix == "Alle":
-    codes_for_selection = product_codes
-else:
-    codes_for_selection = prefix_map[selected_prefix]
-
-# 4) Søg i koder
-search_query = st.sidebar.text_input("Søg i produkt-kode")
-if search_query:
-    codes_for_selection = [c for c in codes_for_selection if search_query.lower() in c.lower()]
-    if not codes_for_selection:
+# 2) Søg (delmatch)
+search = st.sidebar.text_input("Søg i produkt-kode")
+if search:
+    codes = [c for c in codes if search.lower() in c.lower()]
+    if not codes:
         st.sidebar.warning("Ingen produkter matcher søgningen.")
 
-# 5) Vælg alle + multiselect
-select_all = st.sidebar.checkbox("Vælg alle", False)
-if select_all:
-    selected_products = codes_for_selection
-else:
-    selected_products = st.sidebar.multiselect(
-        "Vælg produkter",
-        codes_for_selection,
-        default=codes_for_selection[:1]
-    )
+# 3) Vælg alle / multiselect
+select_all = st.sidebar.checkbox("Vælg alle produkter", False)
+selected_products = codes if select_all else st.sidebar.multiselect(
+    "Vælg produkter", codes, default=codes[:1]
+)
 
-# 6) Vælg frames
-frame_options = list(range(1, 37))
-selected_frames = st.sidebar.multiselect("Vælg frames", frame_options, default=[1])
+# 4) Vælg frames
+selected_frames = st.sidebar.multiselect(
+    "Vælg frames (1–36)", list(range(1,37)), default=[1]
+)
 
-# 7) Filnavn
+# 5) Background color & Size
+background = st.sidebar.text_input("Background color (hex, uden #)", value="F9F8F2")
+size = st.sidebar.number_input("Size (px)", min_value=1, value=1024)
+
+# 6) CSV-filnavn og knap
 csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
-
-# 8) Generér-knap
 generate = st.sidebar.button("Generér CSV")
 
-# --- Main: lav kombinationer og CSV kun for enabled produkter ---
+# Main
 if generate:
     with st.spinner("Genererer…"):
         rows = []
-        base_qs = "encoding=png&size=1500&removeEnvironmentShadow=true"
-        for product in selected_products:
-            cfg_url = f"https://content.cylindo.com/api/v2/{CID}/products/{product}/configuration"
-            resp = requests.get(cfg_url, timeout=20)
-            if resp.status_code != 200:
-                st.error(f"HTTP {resp.status_code} for {product}")
+        for prod in selected_products:
+            # Hent configuration & tjek enabled
+            r = requests.get(
+                f"https://content.cylindo.com/api/v2/{CID}/products/{prod}/configuration",
+                timeout=20
+            )
+            if r.status_code!=200:
+                st.error(f"HTTP {r.status_code} for {prod}")
                 continue
-            cfg = resp.json()
+            cfg = r.json()
             if not cfg.get("enabled", False):
-                # spring deaktiverede produkter
                 continue
 
             feats = cfg.get("features", [])
-            feat_map = {
-                f["code"]: [opt["code"] for opt in f.get("options", []) if isinstance(opt, dict) and "code" in opt]
-                for f in feats if f.get("options")
-            }
+            feat_map = {f["code"]: f["options"] for f in feats if f.get("options")}
             if not feat_map:
-                st.warning(f"Ingen features fundet for {product}")
+                st.warning(f"Ingen features for {prod}")
                 continue
 
-            keys, values = zip(*feat_map.items())
+            keys, vals = zip(*feat_map.items())
             for frame in selected_frames:
-                for combo in itertools.product(*values):
-                    parts = [f"feature={quote(f'{k}:{v}', safe=':')}" for k, v in zip(keys, combo)]
-                    img_url = (
+                for combo in itertools.product(*vals):
+                    # URL-bygning med /frames/{frame}/{product}.PNG
+                    feature_params = [
+                        "feature=" + quote(f"{k}:{opt['code']}", safe=":")
+                        for k,opt in zip(keys, combo)
+                    ]
+                    url = (
                         f"https://content.cylindo.com/api/v2/{CID}"
-                        f"/products/{product}/frames/{frame}?{base_qs}&" + "&".join(parts)
+                        f"/products/{prod}/frames/{frame}/{prod}.PNG"
+                        f"?background={background}"
+                        f"&size={size}"
+                        + "".join(f"&{p}" for p in feature_params)
                     )
-                    rows.append({
-                        "Product":  product,
-                        "Frame":    frame,
-                        "Feature":  keys[0],
-                        "Option":   combo[0],
-                        "ImageURL": img_url
-                    })
+                    # Byg row med alle kolonner
+                    row = {
+                        "Product": prod,
+                        "Frame": frame,
+                        "background": background,
+                        "size": size,
+                        "ImageURL": url
+                    }
+                    for k,opt in zip(keys, combo):
+                        row[f"{k}_code"] = opt.get("code")
+                        row[f"{k}_name"] = opt.get("name", "")
+                    rows.append(row)
                 time.sleep(0.05)
 
         if not rows:
-            st.warning("Ingen data genereret – tjek dine valg.")
+            st.warning("Ingen data genereret – tjek valg.")
         else:
             df = pd.DataFrame(rows)
             st.success(f"Genereret {len(df)} rækker")
             st.dataframe(df.head(10))
-            csv_bytes = df.to_csv(index=False, sep=";").encode("utf-8")
-            st.download_button(
-                "Download CSV",
-                data=csv_bytes,
-                file_name=csv_name,
-                mime="text/csv"
-            )
+            data = df.to_csv(index=False, sep=";").encode("utf-8")
+            st.download_button("Download CSV", data=data, file_name=csv_name, mime="text/csv")
 else:
-    st.info("Angiv indstillinger i sidebar og klik 'Generér CSV'.")
+    st.info("Opsæt dine filtre i sidebar og klik 'Generér CSV'")
