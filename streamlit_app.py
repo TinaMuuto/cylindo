@@ -1,6 +1,6 @@
-# === Streamlit Cylindo CSV Generator med gruppering ===
+# === Streamlit Cylindo CSV Generator med prefix-gruppering og enabled-filter ===
 # Opsætning:
-# 1) .env i roden: CYLINDO_CID=4928
+# 1) .env: CYLINDO_CID=4928
 # 2) .env i .gitignore
 # 3) requirements.txt: streamlit, requests, python-dotenv, pandas
 # 4) pip install -r requirements.txt
@@ -23,79 +23,89 @@ CID = os.getenv("CYLINDO_CID", "4928")
 st.set_page_config(page_title="Cylindo CSV Generator", layout="wide")
 st.title("Cylindo CSV Generator")
 
-# Sidebar inputs
+# Sidebar
 st.sidebar.header("Configuration")
 
 @st.cache_data
-def fetch_product_objects(cid):
-    """Henter alle produkt-objekter (med metadata) for den angivne Kunde-ID."""
+def fetch_product_codes(cid):
+    """Henter alle produkt-koder for kunden."""
     url = f"https://content.cylindo.com/api/v2/{cid}/listcustomerproducts"
     r = requests.get(url, timeout=20)
     r.raise_for_status()
     data = r.json()
-    return [item for item in data.get("products", []) if isinstance(item, dict)]
+    return [item["code"] for item in data.get("products", []) if isinstance(item, dict) and "code" in item]
 
-# 1) Hent produkt-objekter
-product_objs = fetch_product_objects(CID)
+# 1) Hent alle koder
+product_codes = fetch_product_codes(CID)
 
-# 2) Gruppér efter productType
-product_types = sorted({p.get("productType", "Unknown") for p in product_objs})
-selected_type = st.sidebar.selectbox("Grupper efter productType", ["Alle"] + product_types)
-if selected_type == "Alle":
-    grouped = product_objs
+# 2) Byg prefix-grupper
+prefix_map = {}
+for code in product_codes:
+    parts = code.split("_")
+    prefix = "_".join(parts[:2]) if len(parts) >= 2 else code
+    prefix_map.setdefault(prefix, []).append(code)
+
+# 3) Vælg prefix
+prefixes = sorted(prefix_map.keys())
+selected_prefix = st.sidebar.selectbox("Grupper efter kode-prefix", ["Alle"] + prefixes)
+if selected_prefix == "Alle":
+    codes_for_selection = product_codes
 else:
-    grouped = [p for p in product_objs if p.get("productType") == selected_type]
+    codes_for_selection = prefix_map[selected_prefix]
 
-# 3) Søg i koder (delmatch)
-search_query = st.sidebar.text_input("Søg i product code")
+# 4) Søg i koder
+search_query = st.sidebar.text_input("Søg i produkt-kode")
 if search_query:
-    filtered = [p for p in grouped if search_query.lower() in p.get("code", "").lower()]
-    if not filtered:
-        st.sidebar.warning("Ingen produkter matcher din søgning.")
-else:
-    filtered = grouped
+    codes_for_selection = [c for c in codes_for_selection if search_query.lower() in c.lower()]
+    if not codes_for_selection:
+        st.sidebar.warning("Ingen produkter matcher søgningen.")
 
-# 4) Vælg alle checkbox
-select_all = st.sidebar.checkbox("Vælg alle produkter", value=False)
-codes_list = [p["code"] for p in filtered]
+# 5) Vælg alle + multiselect
+select_all = st.sidebar.checkbox("Vælg alle", False)
 if select_all:
-    selected_products = codes_list
+    selected_products = codes_for_selection
 else:
     selected_products = st.sidebar.multiselect(
-        "Vælg én eller flere produkter",
-        codes_list,
-        default=codes_list[:1]
+        "Vælg produkter",
+        codes_for_selection,
+        default=codes_for_selection[:1]
     )
 
-# 5) Frame-udvælgelse
+# 6) Vælg frames
 frame_options = list(range(1, 37))
 selected_frames = st.sidebar.multiselect("Vælg frames", frame_options, default=[1])
 
-# 6) Filnavn
-csv_name = st.sidebar.text_input("Filnavn", value="cylindo_export.csv")
+# 7) Filnavn
+csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
 
-# 7) Generér-knap
+# 8) Generér-knap
 generate = st.sidebar.button("Generér CSV")
 
-# Main: lav kombinationer og CSV
+# Main: lav kombinationer og CSV kun for enabled produkter
 if generate:
-    with st.spinner("Henter data og genererer CSV…"):
-        all_rows = []
+    with st.spinner("Genererer…"):
+        rows = []
         base_qs = "encoding=png&size=1500&removeEnvironmentShadow=true"
         for product in selected_products:
+            # Hent konfiguration
             cfg_url = f"https://content.cylindo.com/api/v2/{CID}/products/{product}/configuration"
             resp = requests.get(cfg_url, timeout=20)
             if resp.status_code != 200:
                 st.error(f"HTTP {resp.status_code} for {product}")
                 continue
             cfg = resp.json()
+            # Tjek enabled-flag
+            if not cfg.get("enabled", False):
+                # spring deaktiverede produkter
+                continue
+
             feats = cfg.get("features", [])
             feat_map = {
                 f["code"]: [opt["code"] for opt in f.get("options", []) if isinstance(opt, dict) and "code" in opt]
                 for f in feats if f.get("options")
             }
             if not feat_map:
-                st.warning(f"Ingen features for {product}")
+                st.warning(f"Ingen features fundet for {product}")
                 continue
 
             keys, values = zip(*feat_map.items())
@@ -106,7 +116,7 @@ if generate:
                         f"https://content.cylindo.com/api/v2/{CID}"
                         f"/products/{product}/frames/{frame}?{base_qs}&" + "&".join(parts)
                     )
-                    all_rows.append({
+                    rows.append({
                         "Product": product,
                         "Frame": frame,
                         "Feature": keys[0],
@@ -115,18 +125,18 @@ if generate:
                     })
                 time.sleep(0.05)
 
-        if not all_rows:
-            st.warning("Ingen data genereret – tjek valg.")
+        if not rows:
+            st.warning("Ingen data genereret – tjek dine valg (eller at produkter er enabled).")
         else:
-            df = pd.DataFrame(all_rows)
-            st.success(f"Genereret {len(df)} rækker.")
+            df = pd.DataFrame(rows)
+            st.success(f"Genereret {len(df)} rækker")
             st.dataframe(df.head(10))
             csv_bytes = df.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button(
-                label="Download CSV",
+                "Download CSV",
                 data=csv_bytes,
                 file_name=csv_name,
                 mime="text/csv"
             )
 else:
-    st.info("Vælg indstillinger i sidebar og klik 'Generér CSV'.")
+    st.info("Angiv indstillinger i sidebar og klik 'Generér CSV'.")
