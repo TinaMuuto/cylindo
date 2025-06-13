@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 CID = os.getenv("CYLINDO_CID", "4928")
 
-# --- !!! NEW: Manual list of features that cannot be combined !!! ---
+# --- Manually define known features that cannot be combined ---
 # You can extend this list if you discover other exclusive groups.
 # Each set contains feature codes that are mutually exclusive.
 MANUAL_EXCLUSIVE_SETS = [
@@ -29,7 +29,7 @@ with st.expander("📖 Sådan bruger du appen"):
     1. Vælg prefix-gruppe eller “Alle”.
     2. Søg eventuelt i koderne.
     3. Kryds “Vælg alle” eller multiselect enkelte produkter.
-    4. Vælg én eller flere frame-numre.
+    4. Vælg én eller flere vinkler (frames).
     5. Angiv den ønskede billedstørrelse (`Size`) og andre billedindstillinger.
     6. Klik **Generér CSV** – outputtet indeholder kun gyldige feature-kombinationer.
     """)
@@ -77,8 +77,12 @@ selected_products = codes_to_display if select_all else st.sidebar.multiselect(
     "Vælg produkter", codes_to_display, default=codes_to_display[:1] if codes_to_display else []
 )
 
+# UPDATED TEXT for selecting frames/angles
 selected_frames = st.sidebar.multiselect(
-    "Vælg frames (1–36)", list(range(1, 37)), default=[1]
+    label="Vælg vinkler (1-36)",
+    options=list(range(1, 37)),
+    default=[1],
+    help="Vælg en eller flere vinkler. Eksempler: 1 = forfra, 17 = bagfra, 4 = skråt forfra, 12 = skråt bagfra."
 )
 
 st.sidebar.subheader("Image Settings")
@@ -94,7 +98,7 @@ if generate:
     if not selected_products:
         st.warning("Vælg venligst mindst ét produkt.")
     elif not selected_frames:
-        st.warning("Vælg venligst mindst ét frame-nummer.")
+        st.warning("Vælg venligst mindst én vinkel.")
     else:
         with st.spinner("Genererer…"):
             rows = []
