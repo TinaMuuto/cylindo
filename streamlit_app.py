@@ -22,8 +22,8 @@ with st.expander("📖 Sådan bruger du appen"):
     2. Søg eventuelt i koderne.
     3. Kryds “Vælg alle” eller multiselect enkelte produkter.
     4. Vælg én eller flere frame-numre.
-    5. Angiv den ønskede billedstørrelse (`Size`). Baggrunden vil være transparent.
-    6. Klik **Generér CSV** – output indeholder de valgte kolonner og én kolonne per feature.
+    5. Angiv den ønskede billedstørrelse (`Size`) og andre billedindstillinger.
+    6. Klik **Generér CSV** – outputtet indeholder kun gyldige feature-kombinationer.
     """)
 
 # Sidebar
@@ -38,7 +38,6 @@ def fetch_product_codes(cid):
         r.raise_for_status()
         products = r.json().get("products", [])
         
-        # Filter for products where productType is "Production"
         production_products = [
             p["code"] for p in products
             if p.get("productType") == "Production" and "code" in p
@@ -77,11 +76,15 @@ selected_frames = st.sidebar.multiselect(
     "Vælg frames (1–36)", list(range(1, 37)), default=[1]
 )
 
-# 5) Size (Background input removed)
-size = st.sidebar.number_input("Size (px)", min_value=1, value=1024)
+# 5) Image Settings
+st.sidebar.subheader("Image Settings")
+size = st.sidebar.number_input("Size (px)", min_value=1, value=1500)
+skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
+
 
 # 6) CSV filename and button
-csv_name = st.sidebar.text_input("Filnavn", "cylindo_export_transparent.csv")
+st.sidebar.subheader("Export")
+csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
 generate = st.sidebar.button("Generér CSV")
 
 # Main content area
@@ -98,7 +101,6 @@ if generate:
 
             for i, prod in enumerate(selected_products):
                 try:
-                    # Fetch configuration
                     config_url = f"https://content.cylindo.com/api/v2/{CID}/products/{prod}/configuration"
                     r = requests.get(config_url, timeout=20)
                     r.raise_for_status()
@@ -108,43 +110,86 @@ if generate:
                         continue
 
                     features_list = cfg.get("features", [])
+                    # NEW: Get feature groups to handle mutual exclusions
+                    feature_groups = cfg.get("featureGroups", [])
+
                     if not features_list:
                         st.warning(f"Ingen features fundet for {prod}")
                         continue
+                    
+                    # Create a lookup map for features that have options
+                    features_by_code = {f["code"]: f for f in features_list if f.get("options")}
 
-                    feat_map = {f["code"]: f["options"] for f in features_list if f.get("options")}
-                    if not feat_map:
-                        st.warning(f"Ingen features med options fundet for {prod}")
+                    # Find which features are part of a group
+                    grouped_feature_codes = {f_code for group in feature_groups for f_code in group.get("features", [])}
+                    
+                    # List of entities to combine. Can be a standalone feature or a group of features.
+                    all_combinable_entities = []
+
+                    # 1. Add standalone features (those not in any group)
+                    standalone_codes = set(features_by_code.keys()) - grouped_feature_codes
+                    for code in standalone_codes:
+                        options_with_key = [(code, opt) for opt in features_by_code[code]["options"]]
+                        if options_with_key:
+                            all_combinable_entities.append(options_with_key)
+                    
+                    # 2. Add feature groups as single entities
+                    for group in feature_groups:
+                        group_options_with_keys = []
+                        for f_code in group.get("features", []):
+                            if f_code in features_by_code:
+                                for opt in features_by_code[f_code]["options"]:
+                                    group_options_with_keys.append((f_code, opt))
+                        if group_options_with_keys:
+                            all_combinable_entities.append(group_options_with_keys)
+                    
+                    if not all_combinable_entities:
+                        st.warning(f"Ingen kombinationer mulige for {prod}")
                         continue
                     
-                    keys, vals = zip(*feat_map.items())
-                    
+                    # Base URL for the image
+                    base_url = f"https://content.cylindo.com/api/v2/{CID}/products/{quote(prod)}/frames"
+
                     for frame in selected_frames:
-                        for combo in itertools.product(*vals):
+                        # NEW: Use the new logic to create valid combinations only
+                        for combo_of_tuples in itertools.product(*all_combinable_entities):
+                            # combo_of_tuples looks like: ( ('BASE', {'code': 'B1'}), ('TEXTILE', {'code': 'T1'}) )
+                            
+                            # Build query parameters
+                            query_params = {
+                                "size": size,
+                                "encoding": "png",
+                                "removeEnvironmentShadow": "true",
+                            }
+                            if skip_sharpening:
+                                query_params["skipSharpening"] = "true"
+                            
                             feature_params = [
-                                "feature=" + quote(f"{k}:{opt['code']}", safe=":")
-                                for k, opt in zip(keys, combo)
+                                f"feature={quote(f'{f_code}:{opt['code']}', safe=':')}" 
+                                for f_code, opt in combo_of_tuples
                             ]
-                            # MODIFIED: Removed background parameter from URL for transparency
+                            
+                            query_string = "&".join([f"{k}={v}" for k, v in query_params.items()])
+                            
                             url = (
-                                f"https://content.cylindo.com/api/v2/{CID}"
-                                f"/products/{quote(prod)}/frames/{frame}/{quote(prod)}.PNG"
-                                f"?size={size}"
-                                + "".join(f"&{p}" for p in feature_params)
+                                f"{base_url}/{frame}/{quote(prod)}.PNG"
+                                f"?{query_string}"
+                                f"&{'&'.join(feature_params)}"
                             )
-                            # MODIFIED: Updated row definition for new header requirements
+                            
                             row = {
                                 "Product": prod,
                                 "Frame": frame,
                                 "size": size,
                                 "ImageURL": url
                             }
-                            # MODIFIED: Creates one column per feature with the feature code as header
-                            for k, opt in zip(keys, combo):
-                                row[k] = opt.get("code")
+                            # Add one column for each feature in the combination
+                            for f_code, opt in combo_of_tuples:
+                                row[f_code] = opt.get("code")
+
                             rows.append(row)
                     
-                    time.sleep(0.05) # Small delay to avoid overwhelming the API
+                    time.sleep(0.05)
                     progress_bar.progress((i + 1) / total_products)
 
                 except requests.exceptions.RequestException as e:
@@ -155,14 +200,11 @@ if generate:
                 st.warning("Ingen data genereret – tjek valg og produktkonfigurationer.")
             else:
                 df = pd.DataFrame(rows)
+                # Fill NaN for columns that don't apply to a row, making the sheet cleaner
+                df = df.fillna('')
                 st.success(f"Genereret {len(df)} rækker")
                 st.dataframe(df.head(10))
                 csv_data = df.to_csv(index=False, sep=";").encode("utf-8")
-                st.download_button(
-                    "Download CSV",
-                    data=csv_data,
-                    file_name=csv_name,
-                    mime="text/csv"
-                )
+                st.download_button("Download CSV", data=csv_data, file_name=csv_name, mime="text/csv")
 else:
     st.info("Opsæt dine filtre i sidebar og klik 'Generér CSV'")
