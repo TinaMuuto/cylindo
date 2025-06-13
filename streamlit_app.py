@@ -18,12 +18,12 @@ st.title("Cylindo CSV Generator")
 # User guide
 with st.expander("📖 Sådan bruger du appen"):
     st.markdown("""
-    1. Vælg prefix-gruppe eller “Alle”. 
-    2. Søg eventuelt i koderne. 
-    3. Kryds “Vælg alle” eller multiselect enkelte produkter. 
-    4. Vælg én eller flere frame-numre. 
-    5. Angiv `Background color` som hex (fx `F9F8F2`) og `Size` (px). 
-    6. Klik **Generér CSV** – output indeholder kolonnerne `background`, `size` og for hver feature både `<FEATURE>_code` & `<FEATURE>_name`. 
+    1. Vælg prefix-gruppe eller “Alle”.
+    2. Søg eventuelt i koderne.
+    3. Kryds “Vælg alle” eller multiselect enkelte produkter.
+    4. Vælg én eller flere frame-numre.
+    5. Angiv den ønskede billedstørrelse (`Size`). Baggrunden vil være transparent.
+    6. Klik **Generér CSV** – output indeholder de valgte kolonner og én kolonne per feature.
     """)
 
 # Sidebar
@@ -38,10 +38,9 @@ def fetch_product_codes(cid):
         r.raise_for_status()
         products = r.json().get("products", [])
         
-        # --- MODIFIED ---
         # Filter for products where productType is "Production"
         production_products = [
-            p["code"] for p in products 
+            p["code"] for p in products
             if p.get("productType") == "Production" and "code" in p
         ]
         return production_products
@@ -78,12 +77,11 @@ selected_frames = st.sidebar.multiselect(
     "Vælg frames (1–36)", list(range(1, 37)), default=[1]
 )
 
-# 5) Background color & Size
-background = st.sidebar.text_input("Background color (hex, uden #)", value="F9F8F2")
+# 5) Size (Background input removed)
 size = st.sidebar.number_input("Size (px)", min_value=1, value=1024)
 
 # 6) CSV filename and button
-csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
+csv_name = st.sidebar.text_input("Filnavn", "cylindo_export_transparent.csv")
 generate = st.sidebar.button("Generér CSV")
 
 # Main content area
@@ -106,8 +104,6 @@ if generate:
                     r.raise_for_status()
                     cfg = r.json()
 
-                    # --- REQUIREMENT ALREADY MET ---
-                    # Your code already correctly checks if the configuration is enabled.
                     if not cfg.get("enabled", False):
                         continue
 
@@ -116,7 +112,6 @@ if generate:
                         st.warning(f"Ingen features fundet for {prod}")
                         continue
 
-                    # Filter for features that have options
                     feat_map = {f["code"]: f["options"] for f in features_list if f.get("options")}
                     if not feat_map:
                         st.warning(f"Ingen features med options fundet for {prod}")
@@ -130,23 +125,23 @@ if generate:
                                 "feature=" + quote(f"{k}:{opt['code']}", safe=":")
                                 for k, opt in zip(keys, combo)
                             ]
+                            # MODIFIED: Removed background parameter from URL for transparency
                             url = (
                                 f"https://content.cylindo.com/api/v2/{CID}"
                                 f"/products/{quote(prod)}/frames/{frame}/{quote(prod)}.PNG"
-                                f"?background={background}"
-                                f"&size={size}"
+                                f"?size={size}"
                                 + "".join(f"&{p}" for p in feature_params)
                             )
+                            # MODIFIED: Updated row definition for new header requirements
                             row = {
                                 "Product": prod,
                                 "Frame": frame,
-                                "background": background,
                                 "size": size,
                                 "ImageURL": url
                             }
+                            # MODIFIED: Creates one column per feature with the feature code as header
                             for k, opt in zip(keys, combo):
-                                row[f"{k}_code"] = opt.get("code")
-                                row[f"{k}_name"] = opt.get("name", "")
+                                row[k] = opt.get("code")
                             rows.append(row)
                     
                     time.sleep(0.05) # Small delay to avoid overwhelming the API
@@ -164,9 +159,9 @@ if generate:
                 st.dataframe(df.head(10))
                 csv_data = df.to_csv(index=False, sep=";").encode("utf-8")
                 st.download_button(
-                    "Download CSV", 
-                    data=csv_data, 
-                    file_name=csv_name, 
+                    "Download CSV",
+                    data=csv_data,
+                    file_name=csv_name,
                     mime="text/csv"
                 )
 else:
