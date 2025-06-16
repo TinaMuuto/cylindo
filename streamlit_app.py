@@ -26,8 +26,8 @@ with st.expander("📖 Sådan bruger du appen"):
     st.markdown("""
     1. Vælg prefix-gruppe eller “Alle”.
     2. Søg eventuelt i koderne.
-    3. Kryds “Vælg alle” eller multiselect enkelte produkter.
-    4. **Nyt:** Når produkter er valgt, kan du vælge specifikke materialer i en ny dropdown.
+    3. Vælg de produkter, du vil generere billeder for.
+    4. **Nyt:** Brug søgefeltet under "Materiale Filter" til at finde og vælge specifikke materialer (f.eks. søg på "divina").
     5. Vælg én eller flere vinkler (frames).
     6. Angiv billedindstillinger.
     7. Klik **Generér CSV**.
@@ -108,22 +108,41 @@ st.sidebar.subheader("Image Settings")
 size = st.sidebar.number_input("Size (px)", min_value=1, value=1500)
 skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
 
+# --- NEW: Redesigned Material Filter with Search ---
 st.sidebar.subheader("Materiale Filter")
-selected_materials_types = st.sidebar.multiselect(
-    label="Vælg materialetyper", options=["TEXTILE", "LEATHER"], default=["TEXTILE", "LEATHER"],
-    help="Vælg for at inkludere kombinationer med disse materialer. Fravælg for at ekskludere."
-)
-
-# --- NEW: Dynamic dropdown for specific materials ---
 material_name_to_code_map = get_material_map(selected_products)
 selected_material_codes = []
+
 if material_name_to_code_map:
+    all_material_names = sorted(material_name_to_code_map.keys())
+    
+    # 1. Search box for materials
+    material_search_query = st.sidebar.text_input("Søg i materialer")
+    
+    # 2. Filter materials based on search
+    if material_search_query:
+        filtered_material_names = [
+            name for name in all_material_names
+            if material_search_query.lower() in name.lower()
+        ]
+    else:
+        filtered_material_names = all_material_names
+        
+    # 3. "Select All" checkbox for search results
+    select_all_materials = False
+    if material_search_query and filtered_material_names:
+        select_all_materials = st.sidebar.checkbox("Vælg alle fundne materialer")
+
+    # 4. Multiselect dropdown with filtered options
+    default_selection = filtered_material_names if select_all_materials else []
     selected_material_names = st.sidebar.multiselect(
-        "Vælg specifikke materialer (valgfrit)",
-        options=sorted(material_name_to_code_map.keys()),
-        help="Hvis intet er valgt, inkluderes alle materialer fra de valgte typer ovenfor."
+        "Vælg specifikke materialer",
+        options=filtered_material_names,
+        default=default_selection,
+        help="Hvis intet er valgt, inkluderes alle materialer."
     )
-    # Convert selected names back to codes for filtering
+    
+    # 5. Convert selected names back to codes for filtering logic
     selected_material_codes = [material_name_to_code_map[name] for name in selected_material_names]
 # ----------------------------------------------------
 
@@ -167,15 +186,14 @@ if generate:
                         if len(intersecting_features) > 1:
                             group_options_with_keys = []
                             for f_code in intersecting_features:
-                                if f_code in selected_materials_types:
-                                    for opt in features_by_code[f_code]["options"]:
-                                        # **MODIFIED**: Filter by specific material codes if they are selected
-                                        if selected_material_codes:
-                                            if opt['code'] in selected_material_codes:
-                                                group_options_with_keys.append((f_code, opt))
-                                        else:
+                                for opt in features_by_code[f_code]["options"]:
+                                    # Filter by specific material codes if a selection has been made
+                                    if selected_material_codes:
+                                        if opt['code'] in selected_material_codes:
                                             group_options_with_keys.append((f_code, opt))
-                                processed_codes.add(f_code)
+                                    else: # Otherwise, include all
+                                        group_options_with_keys.append((f_code, opt))
+                            processed_codes.add(f_code)
                             
                             if group_options_with_keys:
                                 all_combinable_entities.append(group_options_with_keys)
