@@ -12,8 +12,6 @@ load_dotenv()
 CID = os.getenv("CYLINDO_CID", "4928")
 
 # --- Manually define known features that cannot be combined ---
-# You can extend this list if you discover other exclusive groups.
-# Each set contains feature codes that are mutually exclusive.
 MANUAL_EXCLUSIVE_SETS = [
     {"TEXTILE", "LEATHER"}
 ]
@@ -29,9 +27,10 @@ with st.expander("📖 Sådan bruger du appen"):
     1. Vælg prefix-gruppe eller “Alle”.
     2. Søg eventuelt i koderne.
     3. Kryds “Vælg alle” eller multiselect enkelte produkter.
-    4. Vælg én eller flere vinkler (frames).
-    5. Angiv den ønskede billedstørrelse (`Size`) og andre billedindstillinger.
-    6. Klik **Generér CSV** – outputtet indeholder kun gyldige feature-kombinationer.
+    4. **Nyt:** Når produkter er valgt, kan du vælge specifikke materialer i en ny dropdown.
+    5. Vælg én eller flere vinkler (frames).
+    6. Angiv billedindstillinger.
+    7. Klik **Generér CSV**.
     """)
 
 # Sidebar
@@ -39,21 +38,43 @@ st.sidebar.header("Configuration")
 
 @st.cache_data
 def fetch_product_codes(cid):
-    """Fetches product codes from Cylindo API, filtering for Production-type products."""
+    """Fetches all product codes from Cylindo API."""
     url = f"https://content.cylindo.com/api/v2/{cid}/listcustomerproducts"
     try:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
         products = r.json().get("products", [])
-        
-        production_products = [
-            p["code"] for p in products
-            if p.get("productType") == "Production" and "code" in p
-        ]
-        return production_products
+        return [p["code"] for p in products if p.get("productType") == "Production" and "code" in p]
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching product codes: {e}")
         return []
+
+@st.cache_data
+def get_material_map(product_list):
+    """
+    Fetches configurations for selected products to find all TEXTILE/LEATHER options.
+    Returns a dictionary mapping the material's user-friendly name to its code.
+    """
+    if not product_list:
+        return {}
+    
+    all_options = {}  # Use dict {code: name} to handle duplicates
+    for prod_code in product_list:
+        try:
+            config_url = f"https://content.cylindo.com/api/v2/{CID}/products/{prod_code}/configuration"
+            r = requests.get(config_url, timeout=5) # Shorter timeout for interactive UI
+            r.raise_for_status()
+            cfg = r.json()
+            
+            for feature in cfg.get("features", []):
+                if feature.get("code") in ["TEXTILE", "LEATHER"]:
+                    for option in feature.get("options", []):
+                        all_options[option["code"]] = option.get("name", option["code"])
+        except requests.exceptions.RequestException:
+            continue # Silently fail for a single product to not block the UI
+            
+    # Invert the map to be {name: code} for the UI
+    return {name: code for code, name in all_options.items()}
 
 # --- Sidebar Inputs ---
 product_codes = fetch_product_codes(CID)
@@ -77,11 +98,9 @@ selected_products = codes_to_display if select_all else st.sidebar.multiselect(
     "Vælg produkter", codes_to_display, default=codes_to_display[:1] if codes_to_display else []
 )
 
-# UPDATED TEXT for selecting frames/angles
 selected_frames = st.sidebar.multiselect(
     label="Vælg vinkler (1-36)",
-    options=list(range(1, 37)),
-    default=[1],
+    options=list(range(1, 37)), default=[1],
     help="Vælg en eller flere vinkler. Eksempler: 1 = forfra, 17 = bagfra, 4 = skråt forfra, 12 = skråt bagfra."
 )
 
@@ -89,8 +108,27 @@ st.sidebar.subheader("Image Settings")
 size = st.sidebar.number_input("Size (px)", min_value=1, value=1500)
 skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
 
+st.sidebar.subheader("Materiale Filter")
+selected_materials_types = st.sidebar.multiselect(
+    label="Vælg materialetyper", options=["TEXTILE", "LEATHER"], default=["TEXTILE", "LEATHER"],
+    help="Vælg for at inkludere kombinationer med disse materialer. Fravælg for at ekskludere."
+)
+
+# --- NEW: Dynamic dropdown for specific materials ---
+material_name_to_code_map = get_material_map(selected_products)
+selected_material_codes = []
+if material_name_to_code_map:
+    selected_material_names = st.sidebar.multiselect(
+        "Vælg specifikke materialer (valgfrit)",
+        options=sorted(material_name_to_code_map.keys()),
+        help="Hvis intet er valgt, inkluderes alle materialer fra de valgte typer ovenfor."
+    )
+    # Convert selected names back to codes for filtering
+    selected_material_codes = [material_name_to_code_map[name] for name in selected_material_names]
+# ----------------------------------------------------
+
 st.sidebar.subheader("Export")
-csv_name = st.sidebar.text_input("Filnavn", "cylindo_export_corrected.csv")
+csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
 generate = st.sidebar.button("Generér CSV")
 
 # --- Main Logic ---
@@ -112,18 +150,14 @@ if generate:
                     r.raise_for_status()
                     cfg = r.json()
 
-                    if not cfg.get("enabled", False):
-                        continue
-
+                    if not cfg.get("enabled", False): continue
                     features_list = cfg.get("features", [])
                     if not features_list:
-                        st.warning(f"Ingen features fundet for {prod}")
-                        continue
+                        st.warning(f"Ingen features fundet for {prod}"); continue
                     
                     features_by_code = {f["code"]: f for f in features_list if f.get("options")}
                     product_feature_codes = set(features_by_code.keys())
                     
-                    # --- REVISED COMBINATION LOGIC ---
                     all_combinable_entities = []
                     processed_codes = set()
 
@@ -133,8 +167,14 @@ if generate:
                         if len(intersecting_features) > 1:
                             group_options_with_keys = []
                             for f_code in intersecting_features:
-                                for opt in features_by_code[f_code]["options"]:
-                                    group_options_with_keys.append((f_code, opt))
+                                if f_code in selected_materials_types:
+                                    for opt in features_by_code[f_code]["options"]:
+                                        # **MODIFIED**: Filter by specific material codes if they are selected
+                                        if selected_material_codes:
+                                            if opt['code'] in selected_material_codes:
+                                                group_options_with_keys.append((f_code, opt))
+                                        else:
+                                            group_options_with_keys.append((f_code, opt))
                                 processed_codes.add(f_code)
                             
                             if group_options_with_keys:
@@ -148,26 +188,20 @@ if generate:
                             all_combinable_entities.append(options_with_key)
                     
                     if not all_combinable_entities:
-                        st.warning(f"Ingen kombinationer mulige for {prod}")
-                        continue
+                        st.info(f"Ingen kombinationer for '{prod}' efter anvendelse af filtre."); continue
                     
                     base_url = f"https://content.cylindo.com/api/v2/{CID}/products/{quote(prod)}/frames"
 
                     for frame in selected_frames:
                         for combo_of_tuples in itertools.product(*all_combinable_entities):
                             query_params = {"size": size, "encoding": "png", "removeEnvironmentShadow": "true"}
-                            if skip_sharpening:
-                                query_params["skipSharpening"] = "true"
-                            
+                            if skip_sharpening: query_params["skipSharpening"] = "true"
                             feature_params = [f"feature={quote(f'{f_code}:{opt['code']}', safe=':')}" for f_code, opt in combo_of_tuples]
                             query_string = "&".join([f"{k}={v}" for k, v in query_params.items()])
-                            
                             url = (f"{base_url}/{frame}/{quote(prod)}.PNG?{query_string}&{'&'.join(feature_params)}")
-                            
                             row = {"Product": prod, "Frame": frame, "size": size, "ImageURL": url}
                             for f_code, opt in combo_of_tuples:
                                 row[f_code] = opt.get("code")
-
                             rows.append(row)
                     
                     time.sleep(0.05)
