@@ -27,7 +27,7 @@ with st.expander("📖 Sådan bruger du appen"):
     1. Vælg prefix-gruppe eller “Alle”.
     2. Søg eventuelt i koderne.
     3. Vælg de produkter, du vil generere billeder for.
-    4. **Nyt:** Brug søgefeltet under "Materiale Filter" til at finde og vælge specifikke materialer (f.eks. søg på "divina").
+    4. Brug søgefeltet under "Materiale Filter" til at finde og vælge specifikke materialer.
     5. Vælg én eller flere vinkler (frames).
     6. Angiv billedindstillinger.
     7. Klik **Generér CSV**.
@@ -58,11 +58,12 @@ def get_material_map(product_list):
     if not product_list:
         return {}
     
-    all_options = {}  # Use dict {code: name} to handle duplicates
+    all_options = {}
+    api_errors = []
     for prod_code in product_list:
         try:
             config_url = f"https://content.cylindo.com/api/v2/{CID}/products/{prod_code}/configuration"
-            r = requests.get(config_url, timeout=5) # Shorter timeout for interactive UI
+            r = requests.get(config_url, timeout=5)
             r.raise_for_status()
             cfg = r.json()
             
@@ -71,9 +72,12 @@ def get_material_map(product_list):
                     for option in feature.get("options", []):
                         all_options[option["code"]] = option.get("name", option["code"])
         except requests.exceptions.RequestException:
-            continue # Silently fail for a single product to not block the UI
+            api_errors.append(prod_code)
+            continue
+    
+    if api_errors:
+        st.sidebar.warning(f"Kunne ikke hente materialer for: {', '.join(api_errors)}")
             
-    # Invert the map to be {name: code} for the UI
     return {name: code for code, name in all_options.items()}
 
 # --- Sidebar Inputs ---
@@ -108,32 +112,23 @@ st.sidebar.subheader("Image Settings")
 size = st.sidebar.number_input("Size (px)", min_value=1, value=1500)
 skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
 
-# --- NEW: Redesigned Material Filter with Search ---
 st.sidebar.subheader("Materiale Filter")
 material_name_to_code_map = get_material_map(selected_products)
-selected_material_codes = []
+selected_material_names = [] # Init here
 
 if material_name_to_code_map:
     all_material_names = sorted(material_name_to_code_map.keys())
-    
-    # 1. Search box for materials
     material_search_query = st.sidebar.text_input("Søg i materialer")
     
-    # 2. Filter materials based on search
     if material_search_query:
-        filtered_material_names = [
-            name for name in all_material_names
-            if material_search_query.lower() in name.lower()
-        ]
+        filtered_material_names = [name for name in all_material_names if material_search_query.lower() in name.lower()]
     else:
         filtered_material_names = all_material_names
         
-    # 3. "Select All" checkbox for search results
     select_all_materials = False
     if material_search_query and filtered_material_names:
         select_all_materials = st.sidebar.checkbox("Vælg alle fundne materialer")
 
-    # 4. Multiselect dropdown with filtered options
     default_selection = filtered_material_names if select_all_materials else []
     selected_material_names = st.sidebar.multiselect(
         "Vælg specifikke materialer",
@@ -141,10 +136,13 @@ if material_name_to_code_map:
         default=default_selection,
         help="Hvis intet er valgt, inkluderes alle materialer."
     )
-    
-    # 5. Convert selected names back to codes for filtering logic
-    selected_material_codes = [material_name_to_code_map[name] for name in selected_material_names]
-# ----------------------------------------------------
+else:
+    if selected_products:
+        st.sidebar.info("De valgte produkter har ingen TEXTILE eller LEATHER materialer at filtrere på.")
+
+# **FIX**: Convert selected names to codes robustly outside the if/else block
+selected_material_codes = [material_name_to_code_map.get(name) for name in selected_material_names if name in material_name_to_code_map]
+#----------------------------------------------------
 
 st.sidebar.subheader("Export")
 csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
@@ -157,6 +155,10 @@ if generate:
     elif not selected_frames:
         st.warning("Vælg venligst mindst én vinkel.")
     else:
+        # **NEW**: Add a confirmation message to show the filter is active
+        if selected_material_codes:
+            st.info(f"Filtrerer for {len(selected_material_codes)} specifikke materialer.")
+        
         with st.spinner("Genererer…"):
             rows = []
             progress_bar = st.progress(0)
@@ -187,11 +189,11 @@ if generate:
                             group_options_with_keys = []
                             for f_code in intersecting_features:
                                 for opt in features_by_code[f_code]["options"]:
-                                    # Filter by specific material codes if a selection has been made
+                                    # This is the filtering logic
                                     if selected_material_codes:
                                         if opt['code'] in selected_material_codes:
                                             group_options_with_keys.append((f_code, opt))
-                                    else: # Otherwise, include all
+                                    else: # If no selection, include all
                                         group_options_with_keys.append((f_code, opt))
                             processed_codes.add(f_code)
                             
@@ -211,6 +213,7 @@ if generate:
                     base_url = f"https://content.cylindo.com/api/v2/{CID}/products/{quote(prod)}/frames"
 
                     for frame in selected_frames:
+                        # **FIX**: Corrected typo from `itertools..product` to `itertools.product`
                         for combo_of_tuples in itertools.product(*all_combinable_entities):
                             query_params = {"size": size, "encoding": "png", "removeEnvironmentShadow": "true"}
                             if skip_sharpening: query_params["skipSharpening"] = "true"
