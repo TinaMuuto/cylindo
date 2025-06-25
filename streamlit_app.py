@@ -7,7 +7,7 @@ from urllib.parse import quote
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
-from thefuzz import fuzz # <-- NEW: Import for fuzzy string matching
+from thefuzz import fuzz
 
 # Load environment variables
 load_dotenv()
@@ -45,14 +45,18 @@ def load_raw_data(file_path="raw-data.xlsx"):
     try:
         df = pd.read_excel(file_path, engine='openpyxl')
         
-        # NEW: Now also requires "Item Name"
         required_columns = ["Item No", "Item Name", "Base Color", "Color (lookup InRiver)"]
         if not all(col in df.columns for col in required_columns):
             st.error(f"Excel-filen '{file_path}' mangler en eller flere af de påkrævede kolonner: {required_columns}")
             return None
 
-        # Pre-process columns for matching
-        df["normalized_material_color"] = df["Color (lookup InRiver)"].astype(str).str.replace(' ', '').str.lower()
+        # NEW: More robust normalization for material codes
+        def normalize_material_code(text):
+            if pd.isna(text):
+                return ""
+            return "".join(re.findall(r'[a-zA-Z0-9]+', str(text).lower()))
+
+        df["normalized_material_color"] = df["Color (lookup InRiver)"].apply(normalize_material_code)
         
         def get_word_set(text):
             if pd.isna(text):
@@ -69,43 +73,43 @@ def load_raw_data(file_path="raw-data.xlsx"):
         st.error(f"Fejl ved indlæsning af Excel-fil '{file_path}': {e}")
         return None
 
-# --- NEW FUNCTION ---
-def find_best_product_match_index(api_product_name, raw_data_df, threshold=85):
+# --- NEW CONSOLIDATED MATCHING FUNCTION ---
+def find_item_no(api_product_name, api_base_color, api_material_color, raw_data_df, threshold=85):
     """
-    Finds the index of the best matching product in raw_data_df using fuzzy string matching.
-    Returns the index if the match score is above the threshold, otherwise None.
+    Finds an Item No by first pre-filtering by product name similarity, then by colors.
     """
-    # Calculate similarity scores for the API product name against all item names in the Excel file.
-    # We use token_set_ratio which is good at handling extra words or codes.
+    if not all([api_product_name, api_base_color, api_material_color]) or raw_data_df.empty:
+        return ""
+
+    # --- STEP 1: Pre-filter DataFrame by Product Name Similarity ---
     scores = raw_data_df["Item Name"].apply(
         lambda item_name: fuzz.token_set_ratio(api_product_name, str(item_name))
     )
-    
-    if scores.empty or scores.max() < threshold:
-        return None
-        
-    return scores.idxmax()
+    candidate_df = raw_data_df[scores >= threshold]
 
-# --- NEW, SIMPLER FUNCTION ---
-def check_color_match(api_base_color, api_material_color, candidate_row):
-    """
-    Checks if the API colors match the colors in the pre-selected candidate row from Excel.
-    """
-    if not api_base_color or not api_material_color:
-        return False
+    if candidate_df.empty:
+        return ""
 
-    # Normalize API colors
-    material_color_api_norm = str(api_material_color).replace(' ', '').lower()
+    # --- STEP 2: Filter the candidates by color ---
+    def normalize_material_code(text):
+        if not text: return ""
+        return "".join(re.findall(r'[a-zA-Z0-9]+', str(text).lower()))
+
+    material_color_api_norm = normalize_material_code(api_material_color)
     base_color_api_words = set(re.findall(r'\w+', str(api_base_color).lower()))
     
-    # Check material color (exact match)
-    material_match = (candidate_row['normalized_material_color'] == material_color_api_norm)
+    condition1 = candidate_df['base_color_word_set'].apply(
+        lambda excel_words: len(excel_words) > 0 and excel_words.issubset(base_color_api_words)
+    )
+    condition2 = candidate_df['normalized_material_color'] == material_color_api_norm
     
-    # Check base color (word subset match)
-    excel_base_words = candidate_row['base_color_word_set']
-    base_match = len(excel_base_words) > 0 and excel_base_words.issubset(base_color_api_words)
-    
-    return material_match and base_match
+    final_match = candidate_df[condition1 & condition2]
+
+    if not final_match.empty:
+        return final_match.iloc[0]["Item No"]
+        
+    return ""
+
 
 @st.cache_data
 def fetch_product_codes(cid):
@@ -151,8 +155,8 @@ def get_material_map(product_list):
     return {name: code for code, name in all_options.items()}
 
 # --- Sidebar Inputs ---
-product_codes = fetch_product_codes(CID)
 # ... (rest of sidebar code is unchanged) ...
+product_codes = fetch_product_codes(CID)
 prefix_map = {}
 for code in product_codes:
     parts = code.split("_")
@@ -237,26 +241,9 @@ if generate:
             rows = []
             progress_bar = st.progress(0)
             total_products = len(selected_products)
-            
-            # NEW: Cache for product name matches to avoid re-calculating
-            product_match_cache = {}
 
             for i, prod in enumerate(selected_products):
-                # --- NEW: STEP 1 - Find best product match first ---
-                best_match_index = product_match_cache.get(prod)
-                if best_match_index is None: # If not in cache, find it
-                    best_match_index = find_best_product_match_index(prod, raw_data_df)
-                    product_match_cache[prod] = best_match_index
-
-                candidate_row = None
-                item_no_from_product_match = ""
-                if best_match_index is not None:
-                    candidate_row = raw_data_df.iloc[best_match_index]
-                    item_no_from_product_match = candidate_row["Item No"]
-                # ----------------------------------------------------
-                
                 try:
-                    # ... (The code to get Cylindo configurations is the same) ...
                     config_url = f"https://content.cylindo.com/api/v2/{CID}/products/{prod}/configuration"
                     r = requests.get(config_url, timeout=20)
                     r.raise_for_status()
@@ -299,7 +286,6 @@ if generate:
 
                     for frame in selected_frames:
                         for combo_of_tuples in itertools.product(*all_combinable_entities):
-                            # ... (Build URL and base row - same as before) ...
                             query_params = {"size": size, "encoding": "png", "removeEnvironmentShadow": "true"}
                             if skip_sharpening: query_params["skipSharpening"] = "true"
                             feature_params = [f"feature={quote(f'{f_code}:{opt['code']}', safe=':')}" for f_code, opt in combo_of_tuples]
@@ -310,16 +296,16 @@ if generate:
                             for f_code, opt in combo_of_tuples:
                                 row[f_code] = opt.get("code")
                             
-                            row["Item No"] = "" # Default to empty
-
-                            # --- NEW: STEP 2 - Check colors against the pre-found candidate row ---
-                            if candidate_row is not None:
-                                api_base_color = row.get("BASE")
-                                api_material_color = row.get("TEXTILE") or row.get("LEATHER")
-
-                                if check_color_match(api_base_color, api_material_color, candidate_row):
-                                    row["Item No"] = item_no_from_product_match
-                            # -----------------------------------------------------------------------
+                            # --- REVISED MATCHING CALL ---
+                            api_base_color = row.get("BASE")
+                            api_material_color = row.get("TEXTILE") or row.get("LEATHER")
+                            row["Item No"] = find_item_no(
+                                api_product_name=prod,
+                                api_base_color=api_base_color,
+                                api_material_color=api_material_color,
+                                raw_data_df=raw_data_df
+                            )
+                            # -----------------------------
 
                             rows.append(row)
                     
