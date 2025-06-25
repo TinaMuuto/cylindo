@@ -3,3 +3,5 @@ requests
 python-dotenv
 pandas
 openpyxl
+thefuzz
+python-Levenshtein
