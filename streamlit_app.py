@@ -36,6 +36,67 @@ with st.expander("📖 Sådan bruger du appen"):
 # Sidebar
 st.sidebar.header("Configuration")
 
+# --- NEW: Function to load and preprocess the raw data from Excel ---
+@st.cache_data
+def load_raw_data(file_path="raw-data.xlsx"):
+    """Loads and preprocesses the raw data from the Excel file."""
+    try:
+        # Use openpyxl engine to read .xlsx files
+        df = pd.read_excel(file_path, engine='openpyxl')
+        
+        required_columns = ["Item No", "Base Color", "Color (lookup InRiver)"]
+        if not all(col in df.columns for col in required_columns):
+            st.error(f"Excel-filen '{file_path}' mangler en eller flere af de påkrævede kolonner: {required_columns}")
+            return None
+
+        # Pre-process for matching: remove spaces and convert to lower case.
+        # Use .astype(str) to prevent errors if a cell contains non-string data (e.g., numbers)
+        df["normalized_base_color"] = df["Base Color"].astype(str).str.replace(' ', '').str.lower()
+        df["normalized_material_color"] = df["Color (lookup InRiver)"].astype(str).str.replace(' ', '').str.lower()
+        return df
+    except FileNotFoundError:
+        st.error(f"VIGTIGT: Excel-filen '{file_path}' blev ikke fundet. Sørg for, at den er placeret i samme mappe som scriptet.")
+        return None
+    except Exception as e:
+        st.error(f"Fejl ved indlæsning af Excel-fil '{file_path}': {e}")
+        return None
+
+# --- NEW: Function to find the Item No based on the matching rules ---
+def find_item_no(base_color_api, material_color_api, raw_data_df):
+    """
+    Finds the Item No from the raw_data_df based on matching logic.
+
+    Args:
+        base_color_api (str): The 'BASE' color code from the Cylindo API.
+        material_color_api (str): The 'TEXTILE' or 'LEATHER' color code from the Cylindo API.
+        raw_data_df (pd.DataFrame): The pre-processed DataFrame from the Excel file.
+
+    Returns:
+        str: The found 'Item No' or an empty string if no match is found.
+    """
+    if not base_color_api or not material_color_api or raw_data_df is None:
+        return ""
+
+    # Normalize API values (remove spaces, convert to lowercase)
+    base_color_api_norm = str(base_color_api).replace(' ', '').lower()
+    material_color_api_norm = str(material_color_api).replace(' ', '').lower()
+
+    # --- Matching Logic ---
+    # Condition 1: API base color is a partial match (substring) of the Excel base color.
+    condition1 = raw_data_df['normalized_base_color'].str.contains(base_color_api_norm, na=False)
+    
+    # Condition 2: API material color is an exact match to the Excel material color.
+    condition2 = raw_data_df['normalized_material_color'] == material_color_api_norm
+
+    # Filter the DataFrame to find rows where both conditions are true
+    match = raw_data_df[condition1 & condition2]
+
+    if not match.empty:
+        # Return the 'Item No' from the first matching row found
+        return match.iloc[0]["Item No"]
+    
+    return "" # Return empty if no match was found
+
 @st.cache_data
 def fetch_product_codes(cid):
     """Fetches all product codes from Cylindo API."""
@@ -114,7 +175,7 @@ skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
 
 st.sidebar.subheader("Materiale Filter")
 material_name_to_code_map = get_material_map(selected_products)
-selected_material_names = [] # Init here
+selected_material_names = [] 
 
 if material_name_to_code_map:
     all_material_names = sorted(material_name_to_code_map.keys())
@@ -140,7 +201,6 @@ else:
     if selected_products:
         st.sidebar.info("De valgte produkter har ingen TEXTILE eller LEATHER materialer at filtrere på.")
 
-# **FIX**: Convert selected names to codes robustly outside the if/else block
 selected_material_codes = [material_name_to_code_map.get(name) for name in selected_material_names if name in material_name_to_code_map]
 #----------------------------------------------------
 
@@ -155,7 +215,14 @@ if generate:
     elif not selected_frames:
         st.warning("Vælg venligst mindst én vinkel.")
     else:
-        # **NEW**: Add a confirmation message to show the filter is active
+        # --- MODIFIED: Load raw data at the start of generation ---
+        raw_data_df = load_raw_data("raw-data.xlsx")
+        
+        # Stop execution if the data file could not be loaded
+        if raw_data_df is None:
+            st.stop()
+        # -----------------------------------------------------------
+
         if selected_material_codes:
             st.info(f"Filtrerer for {len(selected_material_codes)} specifikke materialer.")
         
@@ -189,13 +256,10 @@ if generate:
                             group_options_with_keys = []
                             for f_code in intersecting_features:
                                 for opt in features_by_code[f_code]["options"]:
-                                    # This is the filtering logic
-                                    if selected_material_codes:
-                                        if opt['code'] in selected_material_codes:
-                                            group_options_with_keys.append((f_code, opt))
-                                    else: # If no selection, include all
+                                    # Material filtering logic
+                                    if not selected_material_codes or opt['code'] in selected_material_codes:
                                         group_options_with_keys.append((f_code, opt))
-                            processed_codes.add(f_code)
+                                processed_codes.add(f_code)
                             
                             if group_options_with_keys:
                                 all_combinable_entities.append(group_options_with_keys)
@@ -213,16 +277,29 @@ if generate:
                     base_url = f"https://content.cylindo.com/api/v2/{CID}/products/{quote(prod)}/frames"
 
                     for frame in selected_frames:
-                        # **FIX**: Corrected typo from `itertools..product` to `itertools.product`
                         for combo_of_tuples in itertools.product(*all_combinable_entities):
                             query_params = {"size": size, "encoding": "png", "removeEnvironmentShadow": "true"}
                             if skip_sharpening: query_params["skipSharpening"] = "true"
                             feature_params = [f"feature={quote(f'{f_code}:{opt['code']}', safe=':')}" for f_code, opt in combo_of_tuples]
                             query_string = "&".join([f"{k}={v}" for k, v in query_params.items()])
                             url = (f"{base_url}/{frame}/{quote(prod)}.PNG?{query_string}&{'&'.join(feature_params)}")
+                            
                             row = {"Product": prod, "Frame": frame, "size": size, "ImageURL": url}
                             for f_code, opt in combo_of_tuples:
                                 row[f_code] = opt.get("code")
+                            
+                            # --- MODIFIED: Find and add Item No ---
+                            api_base_color = row.get("BASE")
+                            api_material_color = row.get("TEXTILE") or row.get("LEATHER")
+
+                            item_no = find_item_no(
+                                base_color_api=api_base_color,
+                                material_color_api=api_material_color,
+                                raw_data_df=raw_data_df
+                            )
+                            row["Item No"] = item_no
+                            # ------------------------------------
+
                             rows.append(row)
                     
                     time.sleep(0.05)
@@ -235,7 +312,16 @@ if generate:
             if not rows:
                 st.warning("Ingen data genereret – tjek valg og produktkonfigurationer.")
             else:
-                df = pd.DataFrame(rows).fillna('')
+                df = pd.DataFrame(rows)
+                
+                # --- MODIFIED: Reorder columns to place 'Item No' second ---
+                cols = df.columns.tolist()
+                if "Item No" in cols:
+                    cols.insert(1, cols.pop(cols.index('Item No')))
+                    df = df[cols]
+                # -----------------------------------------------------------
+
+                df = df.fillna('')
                 st.success(f"Genereret {len(df)} rækker")
                 st.dataframe(df.head(10))
                 csv_data = df.to_csv(index=False, sep=";").encode("utf-8")
