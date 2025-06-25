@@ -2,7 +2,7 @@ import os
 import time
 import requests
 import itertools
-import re  # <-- Import the regular expression module
+import re
 from urllib.parse import quote
 import streamlit as st
 import pandas as pd
@@ -37,7 +37,6 @@ with st.expander("📖 Sådan bruger du appen"):
 # Sidebar
 st.sidebar.header("Configuration")
 
-# --- UPDATED FUNCTION ---
 @st.cache_data
 def load_raw_data(file_path="raw-data.xlsx"):
     """Loads and preprocesses the raw data from the Excel file for matching."""
@@ -49,14 +48,11 @@ def load_raw_data(file_path="raw-data.xlsx"):
             st.error(f"Excel-filen '{file_path}' mangler en eller flere af de påkrævede kolonner: {required_columns}")
             return None
 
-        # For material color - used for exact matching after normalization
         df["normalized_material_color"] = df["Color (lookup InRiver)"].astype(str).str.replace(' ', '').str.lower()
         
-        # For base color - create a column of word sets for flexible, word-based matching
         def get_word_set(text):
             if pd.isna(text):
                 return set()
-            # Find all alphanumeric words, convert to lowercase, and store as a set
             return set(re.findall(r'\w+', str(text).lower()))
             
         df["base_color_word_set"] = df["Base Color"].apply(get_word_set)
@@ -77,14 +73,14 @@ def find_item_no(base_color_api, material_color_api, raw_data_df):
     if not base_color_api or not material_color_api or raw_data_df is None:
         return ""
 
-    # Normalize API values
     material_color_api_norm = str(material_color_api).replace(' ', '').lower()
     base_color_api_words = set(re.findall(r'\w+', str(base_color_api).lower()))
 
     # --- REVISED Matching Logic ---
     # Condition 1: The set of words from Excel's base color must be a subset of the API's base color words.
+    # THIS LINE IS NOW FIXED to always return a boolean, preventing the TypeError.
     condition1 = raw_data_df['base_color_word_set'].apply(
-        lambda excel_words: excel_words and excel_words.issubset(base_color_api_words)
+        lambda excel_words: len(excel_words) > 0 and excel_words.issubset(base_color_api_words)
     )
     
     # Condition 2: Exact match for material code.
