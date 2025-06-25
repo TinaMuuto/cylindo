@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import itertools
+import re  # <-- Import the regular expression module
 from urllib.parse import quote
 import streamlit as st
 import pandas as pd
@@ -36,12 +37,11 @@ with st.expander("📖 Sådan bruger du appen"):
 # Sidebar
 st.sidebar.header("Configuration")
 
-# --- NEW: Function to load and preprocess the raw data from Excel ---
+# --- UPDATED FUNCTION ---
 @st.cache_data
 def load_raw_data(file_path="raw-data.xlsx"):
-    """Loads and preprocesses the raw data from the Excel file."""
+    """Loads and preprocesses the raw data from the Excel file for matching."""
     try:
-        # Use openpyxl engine to read .xlsx files
         df = pd.read_excel(file_path, engine='openpyxl')
         
         required_columns = ["Item No", "Base Color", "Color (lookup InRiver)"]
@@ -49,10 +49,18 @@ def load_raw_data(file_path="raw-data.xlsx"):
             st.error(f"Excel-filen '{file_path}' mangler en eller flere af de påkrævede kolonner: {required_columns}")
             return None
 
-        # Pre-process for matching: remove spaces and convert to lower case.
-        # Use .astype(str) to prevent errors if a cell contains non-string data (e.g., numbers)
-        df["normalized_base_color"] = df["Base Color"].astype(str).str.replace(' ', '').str.lower()
+        # For material color - used for exact matching after normalization
         df["normalized_material_color"] = df["Color (lookup InRiver)"].astype(str).str.replace(' ', '').str.lower()
+        
+        # For base color - create a column of word sets for flexible, word-based matching
+        def get_word_set(text):
+            if pd.isna(text):
+                return set()
+            # Find all alphanumeric words, convert to lowercase, and store as a set
+            return set(re.findall(r'\w+', str(text).lower()))
+            
+        df["base_color_word_set"] = df["Base Color"].apply(get_word_set)
+        
         return df
     except FileNotFoundError:
         st.error(f"VIGTIGT: Excel-filen '{file_path}' blev ikke fundet. Sørg for, at den er placeret i samme mappe som scriptet.")
@@ -61,41 +69,34 @@ def load_raw_data(file_path="raw-data.xlsx"):
         st.error(f"Fejl ved indlæsning af Excel-fil '{file_path}': {e}")
         return None
 
-# --- NEW: Function to find the Item No based on the matching rules ---
+# --- UPDATED FUNCTION ---
 def find_item_no(base_color_api, material_color_api, raw_data_df):
     """
-    Finds the Item No from the raw_data_df based on matching logic.
-
-    Args:
-        base_color_api (str): The 'BASE' color code from the Cylindo API.
-        material_color_api (str): The 'TEXTILE' or 'LEATHER' color code from the Cylindo API.
-        raw_data_df (pd.DataFrame): The pre-processed DataFrame from the Excel file.
-
-    Returns:
-        str: The found 'Item No' or an empty string if no match is found.
+    Finds the Item No using a robust, word-based matching logic for the base color.
     """
     if not base_color_api or not material_color_api or raw_data_df is None:
         return ""
 
-    # Normalize API values (remove spaces, convert to lowercase)
-    base_color_api_norm = str(base_color_api).replace(' ', '').lower()
+    # Normalize API values
     material_color_api_norm = str(material_color_api).replace(' ', '').lower()
+    base_color_api_words = set(re.findall(r'\w+', str(base_color_api).lower()))
 
-    # --- Matching Logic ---
-    # Condition 1: API base color is a partial match (substring) of the Excel base color.
-    condition1 = raw_data_df['normalized_base_color'].str.contains(base_color_api_norm, na=False)
+    # --- REVISED Matching Logic ---
+    # Condition 1: The set of words from Excel's base color must be a subset of the API's base color words.
+    condition1 = raw_data_df['base_color_word_set'].apply(
+        lambda excel_words: excel_words and excel_words.issubset(base_color_api_words)
+    )
     
-    # Condition 2: API material color is an exact match to the Excel material color.
+    # Condition 2: Exact match for material code.
     condition2 = raw_data_df['normalized_material_color'] == material_color_api_norm
 
-    # Filter the DataFrame to find rows where both conditions are true
     match = raw_data_df[condition1 & condition2]
 
     if not match.empty:
-        # Return the 'Item No' from the first matching row found
         return match.iloc[0]["Item No"]
     
-    return "" # Return empty if no match was found
+    return ""
+
 
 @st.cache_data
 def fetch_product_codes(cid):
@@ -215,13 +216,10 @@ if generate:
     elif not selected_frames:
         st.warning("Vælg venligst mindst én vinkel.")
     else:
-        # --- MODIFIED: Load raw data at the start of generation ---
         raw_data_df = load_raw_data("raw-data.xlsx")
         
-        # Stop execution if the data file could not be loaded
         if raw_data_df is None:
             st.stop()
-        # -----------------------------------------------------------
 
         if selected_material_codes:
             st.info(f"Filtrerer for {len(selected_material_codes)} specifikke materialer.")
@@ -249,14 +247,12 @@ if generate:
                     all_combinable_entities = []
                     processed_codes = set()
 
-                    # 1. Process manually defined exclusive sets
                     for exclusive_set in MANUAL_EXCLUSIVE_SETS:
                         intersecting_features = product_feature_codes.intersection(exclusive_set)
                         if len(intersecting_features) > 1:
                             group_options_with_keys = []
                             for f_code in intersecting_features:
                                 for opt in features_by_code[f_code]["options"]:
-                                    # Material filtering logic
                                     if not selected_material_codes or opt['code'] in selected_material_codes:
                                         group_options_with_keys.append((f_code, opt))
                                 processed_codes.add(f_code)
@@ -264,7 +260,6 @@ if generate:
                             if group_options_with_keys:
                                 all_combinable_entities.append(group_options_with_keys)
 
-                    # 2. Process all other standalone features
                     standalone_codes = product_feature_codes - processed_codes
                     for code in standalone_codes:
                         options_with_key = [(code, opt) for opt in features_by_code[code]["options"]]
@@ -288,7 +283,6 @@ if generate:
                             for f_code, opt in combo_of_tuples:
                                 row[f_code] = opt.get("code")
                             
-                            # --- MODIFIED: Find and add Item No ---
                             api_base_color = row.get("BASE")
                             api_material_color = row.get("TEXTILE") or row.get("LEATHER")
 
@@ -298,7 +292,6 @@ if generate:
                                 raw_data_df=raw_data_df
                             )
                             row["Item No"] = item_no
-                            # ------------------------------------
 
                             rows.append(row)
                     
@@ -314,12 +307,10 @@ if generate:
             else:
                 df = pd.DataFrame(rows)
                 
-                # --- MODIFIED: Reorder columns to place 'Item No' second ---
                 cols = df.columns.tolist()
                 if "Item No" in cols:
                     cols.insert(1, cols.pop(cols.index('Item No')))
                     df = df[cols]
-                # -----------------------------------------------------------
 
                 df = df.fillna('')
                 st.success(f"Genereret {len(df)} rækker")
