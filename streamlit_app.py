@@ -24,15 +24,15 @@ st.set_page_config(page_title="Cylindo CSV Generator", layout="wide")
 st.title("Cylindo CSV Generator")
 
 # User guide
-with st.expander("📖 Sådan bruger du appen"):
+with st.expander("📖 How to use the app"):
     st.markdown("""
-    1. Vælg prefix-gruppe eller “Alle”.
-    2. Søg eventuelt i koderne.
-    3. Vælg de produkter, du vil generere billeder for.
-    4. Brug søgefeltet under "Materiale Filter" til at finde og vælge specifikke materialer.
-    5. Vælg én eller flere vinkler (frames).
-    6. Angiv billedindstillinger.
-    7. Klik **Generér CSV**.
+    1. Select a prefix group or "All".
+    2. Optionally, search for specific codes.
+    3. Select the products you want to generate images for.
+    4. Use the search field under "Material Filter" to find and select specific materials.
+    5. Choose one or more angles (frames).
+    6. Specify the image settings.
+    7. Click **Generate CSV**.
     """)
 
 # Sidebar
@@ -47,7 +47,7 @@ def load_raw_data(file_path="raw-data.xlsx"):
         
         required_columns = ["Item No", "Item Name", "Base Color", "Color (lookup InRiver)"]
         if not all(col in df.columns for col in required_columns):
-            st.error(f"Excel-filen '{file_path}' mangler en eller flere af de påkrævede kolonner: {required_columns}")
+            st.error(f"The Excel file '{file_path}' is missing one or more of the required columns: {required_columns}")
             return None
 
         # NEW: More robust normalization for material codes
@@ -67,10 +67,10 @@ def load_raw_data(file_path="raw-data.xlsx"):
         
         return df
     except FileNotFoundError:
-        st.error(f"VIGTIGT: Excel-filen '{file_path}' blev ikke fundet. Sørg for, at den er placeret i samme mappe som scriptet.")
+        st.error(f"IMPORTANT: The Excel file '{file_path}' was not found. Please ensure it is in the same directory as the script.")
         return None
     except Exception as e:
-        st.error(f"Fejl ved indlæsning af Excel-fil '{file_path}': {e}")
+        st.error(f"Error loading the Excel file '{file_path}': {e}")
         return None
 
 # --- NEW CONSOLIDATED MATCHING FUNCTION ---
@@ -150,7 +150,7 @@ def get_material_map(product_list):
             continue
     
     if api_errors:
-        st.sidebar.warning(f"Kunne ikke hente materialer for: {', '.join(api_errors)}")
+        st.sidebar.warning(f"Could not retrieve materials for: {', '.join(api_errors)}")
             
     return {name: code for code, name in all_options.items()}
 
@@ -162,38 +162,38 @@ for code in product_codes:
     parts = code.split("_")
     prefix = "_".join(parts[:2]) if len(parts) >= 2 else code
     prefix_map.setdefault(prefix, []).append(code)
-prefixes = ["Alle"] + sorted(prefix_map.keys())
-selected_prefix = st.sidebar.selectbox("Grupper efter prefix", prefixes)
-codes_to_display = product_codes if selected_prefix == "Alle" else prefix_map[selected_prefix]
+prefixes = ["All"] + sorted(prefix_map.keys())
+selected_prefix = st.sidebar.selectbox("Group by Prefix", prefixes)
+codes_to_display = product_codes if selected_prefix == "All" else prefix_map[selected_prefix]
 
-search_query = st.sidebar.text_input("Søg i produkt-kode")
+search_query = st.sidebar.text_input("Search product code")
 if search_query:
     codes_to_display = [c for c in codes_to_display if search_query.lower() in c.lower()]
     if not codes_to_display:
-        st.sidebar.warning("Ingen produkter matcher søgningen.")
+        st.sidebar.warning("No products match the search query.")
 
-select_all = st.sidebar.checkbox("Vælg alle produkter", False)
+select_all = st.sidebar.checkbox("Select all products", False)
 selected_products = codes_to_display if select_all else st.sidebar.multiselect(
-    "Vælg produkter", codes_to_display, default=codes_to_display[:1] if codes_to_display else []
+    "Select Products", codes_to_display, default=codes_to_display[:1] if codes_to_display else []
 )
 
 selected_frames = st.sidebar.multiselect(
-    label="Vælg vinkler (1-36)",
+    label="Select Angles (1-36)",
     options=list(range(1, 37)), default=[1],
-    help="Vælg en eller flere vinkler. Eksempler: 1 = forfra, 17 = bagfra, 4 = skråt forfra, 12 = skråt bagfra."
+    help="Select one or more angles. Examples: 1 = front, 17 = back, 4 = diagonal front, 12 = diagonal back."
 )
 
 st.sidebar.subheader("Image Settings")
 size = st.sidebar.number_input("Size (px)", min_value=1, value=1500)
 skip_sharpening = st.sidebar.checkbox("Skip sharpening", value=True)
 
-st.sidebar.subheader("Materiale Filter")
+st.sidebar.subheader("Material Filter")
 material_name_to_code_map = get_material_map(selected_products)
-selected_material_names = [] 
+selected_material_names = []
 
 if material_name_to_code_map:
     all_material_names = sorted(material_name_to_code_map.keys())
-    material_search_query = st.sidebar.text_input("Søg i materialer")
+    material_search_query = st.sidebar.text_input("Search materials")
     
     if material_search_query:
         filtered_material_names = [name for name in all_material_names if material_search_query.lower() in name.lower()]
@@ -202,32 +202,32 @@ if material_name_to_code_map:
         
     select_all_materials = False
     if material_search_query and filtered_material_names:
-        select_all_materials = st.sidebar.checkbox("Vælg alle fundne materialer")
+        select_all_materials = st.sidebar.checkbox("Select all found materials")
 
     default_selection = filtered_material_names if select_all_materials else []
     selected_material_names = st.sidebar.multiselect(
-        "Vælg specifikke materialer",
+        "Select specific materials",
         options=filtered_material_names,
         default=default_selection,
-        help="Hvis intet er valgt, inkluderes alle materialer."
+        help="If nothing is selected, all materials will be included."
     )
 else:
     if selected_products:
-        st.sidebar.info("De valgte produkter har ingen TEXTILE eller LEATHER materialer at filtrere på.")
+        st.sidebar.info("The selected products have no TEXTILE or LEATHER materials to filter.")
 
 selected_material_codes = [material_name_to_code_map.get(name) for name in selected_material_names if name in material_name_to_code_map]
 #----------------------------------------------------
 
 st.sidebar.subheader("Export")
-csv_name = st.sidebar.text_input("Filnavn", "cylindo_export.csv")
-generate = st.sidebar.button("Generér CSV")
+csv_name = st.sidebar.text_input("File name", "cylindo_export.csv")
+generate = st.sidebar.button("Generate CSV")
 
 # --- Main Logic ---
 if generate:
     if not selected_products:
-        st.warning("Vælg venligst mindst ét produkt.")
+        st.warning("Please select at least one product.")
     elif not selected_frames:
-        st.warning("Vælg venligst mindst én vinkel.")
+        st.warning("Please select at least one angle.")
     else:
         raw_data_df = load_raw_data("raw-data.xlsx")
         
@@ -235,9 +235,9 @@ if generate:
             st.stop()
 
         if selected_material_codes:
-            st.info(f"Filtrerer for {len(selected_material_codes)} specifikke materialer.")
+            st.info(f"Filtering for {len(selected_material_codes)} specific materials.")
         
-        with st.spinner("Genererer…"):
+        with st.spinner("Generating..."):
             rows = []
             progress_bar = st.progress(0)
             total_products = len(selected_products)
@@ -252,7 +252,7 @@ if generate:
                     if not cfg.get("enabled", False): continue
                     features_list = cfg.get("features", [])
                     if not features_list:
-                        st.warning(f"Ingen features fundet for {prod}"); continue
+                        st.warning(f"No features found for {prod}"); continue
                     
                     features_by_code = {f["code"]: f for f in features_list if f.get("options")}
                     product_feature_codes = set(features_by_code.keys())
@@ -280,7 +280,7 @@ if generate:
                             all_combinable_entities.append(options_with_key)
                     
                     if not all_combinable_entities:
-                        st.info(f"Ingen kombinationer for '{prod}' efter anvendelse af filtre."); continue
+                        st.info(f"No combinations for '{prod}' after applying filters."); continue
                     
                     base_url = f"https://content.cylindo.com/api/v2/{CID}/products/{quote(prod)}/frames"
 
@@ -313,11 +313,11 @@ if generate:
                     progress_bar.progress((i + 1) / total_products)
 
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Fejl ved hentning af konfiguration for {prod}: {e}")
+                    st.error(f"Error fetching configuration for {prod}: {e}")
                     continue
 
             if not rows:
-                st.warning("Ingen data genereret – tjek valg og produktkonfigurationer.")
+                st.warning("No data generated – please check your selections and product configurations.")
             else:
                 df = pd.DataFrame(rows)
                 
@@ -327,9 +327,9 @@ if generate:
                     df = df[cols]
 
                 df = df.fillna('')
-                st.success(f"Genereret {len(df)} rækker")
+                st.success(f"Generated {len(df)} rows")
                 st.dataframe(df.head(10))
                 csv_data = df.to_csv(index=False, sep=";").encode("utf-8")
                 st.download_button("Download CSV", data=csv_data, file_name=csv_name, mime="text/csv")
 else:
-    st.info("Opsæt dine filtre i sidebar og klik 'Generér CSV'")
+    st.info("Set up your filters in the sidebar and click 'Generate CSV'")
