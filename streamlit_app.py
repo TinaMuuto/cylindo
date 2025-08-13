@@ -23,6 +23,15 @@ MANUAL_EXCLUSIVE_SETS = [
 st.set_page_config(page_title="Cylindo CSV Generator", layout="wide")
 st.title("Cylindo CSV Generator")
 
+# --- App Description ---
+st.markdown("""
+This app allows you to easily generate a list of image URLs from Cylindo for your products. 
+It connects to the Cylindo API, fetches product data, and then lets you configure image settings, 
+including product codes, materials, angles, and size. The final output is a CSV file containing 
+a URL for each configured image, along with its corresponding item number from your raw data.
+""")
+# ---------------------
+
 # User guide
 with st.expander("📖 How to use the app"):
     st.markdown("""
